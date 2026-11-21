@@ -948,7 +948,7 @@
 
   /* ================= SoundCloud (official API, streaming only) ================= */
   const SC = { api: 'https://api.soundcloud.com', auth: 'https://secure.soundcloud.com/authorize', token: 'https://secure.soundcloud.com/oauth/token' };
-  const sc = { likes: null, loading: false, fresh: [], seen: new Set(ls.get('orbit.sc.seen', [])) };
+  const sc = { likes: null, loading: false, q: '', fresh: [], seen: new Set(ls.get('orbit.sc.seen', [])) };
   const scCred = () => ls.get('orbit.sc.cred', null);
   const scTok = () => ls.get('orbit.sc.tok', null);
   const redirectUri = () => location.origin + location.pathname.replace(/index\.html$/, '');
@@ -1079,6 +1079,7 @@
         out.push({ t: 'Sign in with SoundCloud', on: scSignIn });
         out.push({ t: 'Edit credentials', go: 1, dim: 1, on: () => push(scSetup()) });
       } else {
+        out.push({ t: 'Search', go: 1, on: () => push(scSearchScreen()) });
         out.push({ t: 'Likes', s: sc.likes ? String(sc.likes.length) : 'tap to load', go: 1, on: async () => { if (!sc.likes) await scLoadLikes(); if (sc.likes) push(listScreen('Likes', () => scTrackItems(sc.likes), { empty: 'No streamable likes found.' })); } });
         out.push({ t: 'Shuffle Likes', on: async () => { if (!sc.likes) await scLoadLikes(); if (sc.likes && sc.likes.length) { playList(sc.likes, null, 'sc', true); openNP(); } } });
         out.push({ t: 'New since last sync', s: sc.likes ? String(sc.fresh.length) : '', go: 1, on: async () => { if (!sc.likes) await scLoadLikes(); if (sc.likes) push(scNewScreen()); } });
@@ -1089,6 +1090,46 @@
       }
       return out;
     }, { noteFn: () => blockedHost() ? '<b>Preview mode.</b> Claude\'s preview blocks outside connections, so SoundCloud only works from your own hosted copy of this app.' : '' });
+  }
+  function scSearchScreen() {
+    return { kind: 'html', title: 'Search', mount(el) {
+      el.innerHTML = '<div class="form"><label for="scQ">Search SoundCloud and your likes</label>' +
+        '<input id="scQ" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false" value="' + esc(sc.q || '') + '">' +
+        '<div class="btnrow"><button class="btn" id="scGo" type="button">Search</button></div></div>';
+      const go = () => {
+        const q = $('#scQ').value.trim();
+        if (!q) { toast('Type something to search'); return; }
+        sc.q = q;
+        push(scResultsScreen(q));
+      };
+      $('#scGo').onclick = go;
+      $('#scQ').addEventListener('input', () => { sc.q = $('#scQ').value; });
+      $('#scQ').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+      setTimeout(() => { try { $('#scQ').focus(); } catch (e) { /* ignore */ } }, 80);
+    } };
+  }
+  function scResultsScreen(q) {
+    const st = { loading: true, tracks: [], err: '' };
+    const lq = q.toLowerCase();
+    const mine = (sc.likes || []).filter((t) => (t.title + ' ' + t.artist).toLowerCase().indexOf(lq) >= 0).slice(0, 30);
+    const scr = listScreen('Results', () => {
+      const have = new Set(mine.map((t) => t.id));
+      const all = mine.concat(st.tracks.filter((t) => !have.has(t.id)));
+      const items = scTrackItems(all).map((it, i) => (i < mine.length ? Object.assign(it, { s: '\u2665 ' + all[i].artist }) : it));
+      if (st.loading) items.push({ t: 'Searching SoundCloud...', dim: 1 });
+      else if (st.err) items.push({ t: st.err, dim: 1 });
+      return items;
+    }, { empty: 'No matches.', note: 'Results for "' + esc(q) + '". A heart marks songs from your likes.' });
+    (async () => {
+      try {
+        const j = await scApi('/tracks', { q: q, access: 'playable', limit: 30, linked_partitioning: 'true' });
+        const col = Array.isArray(j) ? j : (j.collection || []);
+        st.tracks = col.filter((t) => t.access !== 'blocked').map(normTrack);
+      } catch (e) { st.err = e.message; }
+      st.loading = false;
+      if (top() === scr) refresh();
+    })();
+    return scr;
   }
   function scNewScreen() {
     return listScreen('New Likes', () => sc.fresh.length ? scTrackItems(sc.fresh).concat([{ t: 'Mark all as seen', dim: 1, on: () => { sc.seen = new Set(sc.likes.map((x) => x.id)); ls.set('orbit.sc.seen', Array.from(sc.seen)); sc.fresh = []; toast('Marked as seen'); pop(); } }]) : [], { empty: 'No new likes since your last sync.' });
