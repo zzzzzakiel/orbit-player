@@ -409,8 +409,10 @@
         P.url = URL.createObjectURL(b.blob);
         src = P.url;
       } else {
-        src = await scStreamUrl(t);
+        const cands = await scStreamUrls(t);
         if (my !== P.tok) return;
+        P.cands = cands; P.ci = 0;
+        src = cands[0].u;
       }
     } catch (e) {
       toast(e.message || 'Could not load this track', 3200);
@@ -475,9 +477,18 @@
   audio.addEventListener('timeupdate', () => { updateNPTime(); });
   audio.addEventListener('durationchange', () => { updateNPTime(); updatePosition(); });
   audio.addEventListener('error', () => {
-    if (!audio.getAttribute('src')) return;
+    const cs = audio.getAttribute('src');
+    if (!cs || cs === SILENT) return;
     const t = cur();
-    toast(P.kind === 'sc' ? 'SoundCloud refused this stream. Try Test connection.' : 'Can\'t play ' + (t ? t.title : 'this file'), 3500);
+    const code = audio.error ? audio.error.code : '?';
+    if (P.kind === 'sc' && P.cands && P.ci + 1 < P.cands.length) {
+      P.ci++;
+      audio.src = P.cands[P.ci].u;
+      audio.play().catch(() => {});
+      return;
+    }
+    const used = P.kind === 'sc' && P.cands ? P.cands.map((c) => c.k.replace(/_url$/, '')).join(', ') : '';
+    toast(P.kind === 'sc' ? 'SoundCloud won\'t play this one (' + used + ', code ' + code + ')' : 'Can\'t play ' + (t ? t.title : 'this file'), 4200);
   });
 
   /* iOS only lets a media element play after a tap on that element. Unlock it silently on the first tap so
@@ -1025,11 +1036,12 @@
     } catch (e) { toast(e.message, 4200); }
     finally { sc.loading = false; refresh(); }
   }
-  async function scStreamUrl(t) {
+  const SC_KEYS = ['hls_aac_160_url', 'hls_aac_96_url', 'hls_mp3_128_url', 'hls_opus_64_url', 'http_mp3_128_url'];
+  async function scStreamUrls(t) {
     const j = await scApi('/tracks/' + t.id + '/streams');
-    const u = j.hls_aac_160_url || j.hls_mp3_128_url || j.http_mp3_128_url;
-    if (!u) throw new Error('SoundCloud has no stream for this track');
-    return u;
+    const list = SC_KEYS.filter((k) => j[k]).map((k) => ({ k: k, u: j[k] }));
+    if (!list.length) throw new Error(j.preview_mp3_128_url ? 'SoundCloud only allows a 30s preview of this one' : 'SoundCloud has no stream for this track');
+    return list;
   }
   function openLink(url) { if (!url) return; const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; document.body.appendChild(a); a.click(); a.remove(); }
   function scTrackItems(tracks) {
@@ -1088,28 +1100,45 @@
       el.innerHTML = '<div class="log" id="scLog"></div>';
       const log = $('#scLog');
       const line = (txt, cls) => { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = txt; log.appendChild(d); log.scrollTop = log.scrollHeight; };
+      const probe = (u) => new Promise((resolve) => {
+        const a = new Audio(); a.preload = 'metadata';
+        const done = (r) => { a.onloadedmetadata = null; a.onerror = null; a.removeAttribute('src'); resolve(r); };
+        a.onloadedmetadata = () => done('ok ' + Math.round(a.duration) + 's');
+        a.onerror = () => done('err' + (a.error ? a.error.code : '?'));
+        setTimeout(() => done('timeout'), 5000);
+        a.src = u;
+      });
+      const http = async (u) => { try { const r = await fetch(u); return String(r.status); } catch (e) { return 'cors'; } };
       (async () => {
-        line('Page: ' + location.origin + location.pathname);
-        line('Redirect URI: ' + redirectUri());
+        line('v2 ' + location.pathname);
         const t = scTok();
-        line(t ? 'Token present, expires in ' + Math.round((t.exp - Date.now()) / 60000) + ' min' : 'No token', t ? 'ok' : 'bad');
+        line(t ? 'Token ok, ' + Math.round((t.exp - Date.now()) / 60000) + ' min left' : 'No token', t ? 'ok' : 'bad');
         try {
           const me = await scApi('/me');
           line('/me: ' + (me.username || me.urn), 'ok');
-          const j = await scApi('/me/likes/tracks', { limit: 1, linked_partitioning: 'true', access: 'playable' });
-          const col = Array.isArray(j) ? j : (j.collection || []);
-          line('likes: first = ' + (col[0] ? col[0].title : '(none)'), 'ok');
-          if (col[0]) {
-            const nt = normTrack(col[0]);
-            const s = await scApi('/tracks/' + nt.id + '/streams');
-            line('streams keys: ' + Object.keys(s).join(', '), 'ok');
-            const u = s.hls_aac_160_url || s.hls_mp3_128_url;
-            if (u) {
-              const a = new Audio();
-              a.preload = 'metadata';
-              const res = await new Promise((resolve) => { a.onloadedmetadata = () => resolve('ok ' + a.duration.toFixed(0) + 's'); a.onerror = () => resolve('error code ' + (a.error && a.error.code)); setTimeout(() => resolve('timeout'), 8000); a.src = u; });
-              line('audio element: ' + res, /^ok/.test(res) ? 'ok' : 'bad');
-            }
+          let tr = sc.likes;
+          if (!tr || !tr.length) {
+            const j = await scApi('/me/likes/tracks', { limit: 8, linked_partitioning: 'true', access: 'playable' });
+            tr = (Array.isArray(j) ? j : (j.collection || [])).map(normTrack);
+          }
+          const n = tr.length;
+          const idx = Array.from(new Set([0, 1, 2, Math.floor(n / 4), Math.floor(n / 2), Math.floor(3 * n / 4), n - 1].filter((i) => i >= 0 && i < n)));
+          line('likes: ' + n + ', testing ' + idx.length, 'ok');
+          for (const i of idx) {
+            const x = tr[i];
+            line('#' + (i + 1) + ' ' + x.title.slice(0, 26));
+            try {
+              const s = await scApi('/tracks/' + x.id + '/streams');
+              const ks = Object.keys(s);
+              line('  keys: ' + ks.map((k) => k.replace(/_url$/, '')).join(' '));
+              const k = SC_KEYS.find((q) => s[q]);
+              if (!k) { line('  no full stream', 'bad'); continue; }
+              const u = s[k];
+              const host = (u.split('/')[2] || '').replace('.soundcloud.cloud', '.sc.cloud');
+              const st = await http(u);
+              const au = await probe(u);
+              line('  ' + k.replace(/_url$/, '') + ' @' + host + ' http ' + st + ' audio ' + au, /^ok/.test(au) ? 'ok' : 'bad');
+            } catch (e) { line('  ' + e.message, 'bad'); }
           }
           line('Done.');
         } catch (e) { line(e.message, 'bad'); }
