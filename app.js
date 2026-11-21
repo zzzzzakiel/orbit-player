@@ -530,8 +530,8 @@
     set('previoustrack', () => prev());
     set('nexttrack', () => next(false));
     set('seekto', (d) => { if (d && d.seekTime != null) audio.currentTime = d.seekTime; });
-    set('seekbackward', (d) => seekBy(-((d && d.seekOffset) || 10)));
-    set('seekforward', (d) => seekBy((d && d.seekOffset) || 10));
+    set('seekbackward', null);
+    set('seekforward', null);
   }
   setInterval(() => { if (!audio.paused) updatePosition(); }, 4000);
 
@@ -705,7 +705,6 @@
     return listScreen('Orbit', () => {
       const out = [];
       if (cur()) out.push({ t: 'Now Playing', go: 1, on: openNP });
-      out.push({ t: 'Music', go: 1, on: () => push(musicScreen()) });
       out.push({ t: 'Shuffle Songs', on: () => { if (!lib.songs.length) { toast('Import songs first'); return; } playList(lib.songs, null, 'local', true); openNP(); } });
       out.push({ t: 'SoundCloud', go: 1, on: () => push(scRoot()) });
       out.push({ t: 'Import Songs', on: pickFiles });
