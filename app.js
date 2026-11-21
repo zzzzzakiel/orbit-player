@@ -523,7 +523,10 @@
       navigator.mediaSession.metadata = new MediaMetadata({ title: t.title, artist: t.artist, album: t.album || '', artwork: t.art ? [{ src: t.art, sizes: '256x256' }] : [] });
     } catch (e) { /* ignore */ }
   }
-  if ('mediaSession' in navigator) {
+  /* iOS drops handlers registered before audio is playing, so install them again on every 'playing' event.
+     seekbackward/seekforward stay null so the lock screen shows previous/next track instead of +/-10s. */
+  function installMS() {
+    if (!('mediaSession' in navigator)) return;
     const set = (a, fn) => { try { navigator.mediaSession.setActionHandler(a, fn); } catch (e) { /* unsupported */ } };
     set('play', () => audio.play().catch(() => {}));
     set('pause', () => audio.pause());
@@ -533,6 +536,8 @@
     set('seekbackward', null);
     set('seekforward', null);
   }
+  installMS();
+  audio.addEventListener('playing', installMS);
   setInterval(() => { if (!audio.paused) updatePosition(); }, 4000);
 
   /* ================= screens ================= */
