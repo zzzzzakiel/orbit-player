@@ -100,6 +100,14 @@
   const THEMES = [
     { id: 'silver', name: 'Silver' },
     { id: 'graphite', name: 'Graphite' },
+    { id: 'aurora', name: 'Aurora' },
+    { id: 'holo', name: 'Holo' },
+    { id: 'sunset', name: 'Sunset Drive' },
+    { id: 'vapor', name: 'Vapor' },
+    { id: 'cola', name: 'Cherry Cola' },
+    { id: 'champagne', name: 'Champagne' },
+    { id: 'terminal', name: 'Terminal' },
+    { id: 'noir', name: 'Noir Red' },
     { id: 'lime', name: 'Lime' },
     { id: 'grape', name: 'Grape Glitter' },
     { id: 'bubblegum', name: 'Bubblegum' },
@@ -386,8 +394,24 @@
     if (first != null && first >= 0) { const f = arr[first]; const k = a.indexOf(f); if (k > 0) { a.splice(k, 1); a.unshift(f); } }
     return a;
   }
+  /* Songs the person queued with a hold on the center button. They sit right after the current song, in the order they were cued. */
+  const cuedSet = new Set();
+  function cueTrack(track, kind) {
+    if (!track) return false;
+    if (!P.queue.length || P.idx < 0) { playList([track], 0, kind); toast('Queued \u00b7 playing now'); return true; }
+    if (P.kind !== kind) { toast('SoundCloud and local songs keep separate queues'); return false; }
+    let j = P.idx + 1;
+    while (j < P.queue.length && cuedSet.has(P.queue[j])) j++;
+    P.queue.splice(j, 0, track);
+    if (!P.base.includes(track)) P.base.push(track);
+    cuedSet.add(track);
+    const n = j - P.idx;
+    toast(n === 1 ? 'Queued \u00b7 plays next' : 'Queued \u00b7 #' + n + ' up next');
+    return true;
+  }
   async function playList(tracks, start, kind, forceShuffle) {
     if (!tracks.length) return;
+    cuedSet.clear();
     P.kind = kind;
     P.base = tracks.slice();
     if (forceShuffle != null) { P.shuffle = forceShuffle; cfg.shuffle = forceShuffle; saveCfg(); }
@@ -398,6 +422,7 @@
     const t = P.queue[i];
     if (!t) return;
     P.idx = i;
+    cuedSet.delete(t);
     const my = ++P.tok;
     let src;
     try {
@@ -697,6 +722,7 @@
     return songs.map((s, i) => ({
       t: s.title, s: s.artist,
       on: () => { playList(songs, i, 'local'); openNP(); },
+      cue: () => cueTrack(s, 'local'),
       long: () => push(songOptions(s, title))
     }));
   }
@@ -757,7 +783,7 @@
       const songs = p.songIds.map((id) => lib.byId.get(id)).filter(Boolean);
       const out = [];
       if (songs.length) out.push({ t: 'Shuffle', on: () => { playList(songs, null, 'local', true); openNP(); } });
-      songs.forEach((s, i) => out.push({ t: s.title, s: s.artist, on: () => { playList(songs, i, 'local'); openNP(); }, long: () => push(songOptions(s, p.name, p)) }));
+      songs.forEach((s, i) => out.push({ t: s.title, s: s.artist, on: () => { playList(songs, i, 'local'); openNP(); }, cue: () => cueTrack(s, 'local'), long: () => push(songOptions(s, p.name, p)) }));
       out.push({ t: 'Rename Playlist…', dim: 1, on: async () => { const n = await askText('Playlist name', p.name); if (!n) return; p.name = n; await DB.put('playlists', p); top().title = n; refresh(); } });
       out.push({ t: 'Delete Playlist', dim: 1, on: () => push(confirmScreen('Delete "' + p.name + '"?', 'Delete Playlist', async () => { await DB.del('playlists', p.id); lib.playlists = lib.playlists.filter((x) => x.id !== p.id); stack.pop(); stack.pop(); render(); toast('Playlist deleted'); })) });
       return out;
@@ -897,19 +923,49 @@
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     return { a: Math.atan2(e.clientY - cy, e.clientX - cx) * 180 / Math.PI, d: Math.hypot(e.clientX - cx, e.clientY - cy) / (r.width / 2) };
   }
-  const W = { on: false, id: null, last: 0, acc: 0, total: 0, sd: 0, zone: '', x: 0, y: 0 };
+  const W = { on: false, id: null, last: 0, acc: 0, total: 0, sd: 0, zone: '', x: 0, y: 0, held: false };
   const STEP = 18;
+  /* Hold the center button to cue the highlighted song. */
+  const HOLD_MS = 650;
+  const centerEl = $('#center');
+  let holdT = 0;
+  function holdStop() { clearTimeout(holdT); centerEl.classList.remove('holding'); }
+  function cueSelected() {
+    const sc = top();
+    if (sc.kind === 'list') {
+      const it = sc.items[sc.index];
+      if (it && it.cue) {
+        if (it.cue()) {
+          const row = view.querySelector('.row.sel');
+          if (row) { row.classList.remove('flash'); void row.offsetWidth; row.classList.add('flash'); }
+        }
+        return;
+      }
+    }
+    toast('Highlight a song, then hold to queue');
+  }
+  function holdFire() {
+    W.held = true;
+    centerEl.classList.remove('holding');
+    centerEl.classList.remove('cued'); void centerEl.offsetWidth; centerEl.classList.add('cued');
+    tick();
+    try { if (navigator.vibrate) navigator.vibrate(16); } catch (err) { /* ignore */ }
+    cueSelected();
+  }
   wheel.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     try { wheel.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
     const p = polar(e);
     W.on = true; W.id = e.pointerId; W.last = p.a; W.acc = 0; W.total = 0; W.sd = p.d; W.x = e.clientX; W.y = e.clientY;
     W.zone = zoneOf(p);
+    W.held = false;
     hot(W.zone, true);
+    if (W.zone === 'center') { centerEl.classList.remove('cued'); centerEl.classList.add('holding'); clearTimeout(holdT); holdT = setTimeout(holdFire, HOLD_MS); }
   });
   wheel.addEventListener('pointermove', (e) => {
     if (!W.on || e.pointerId !== W.id) return;
     const p = polar(e);
+    if (holdT && Math.hypot(e.clientX - W.x, e.clientY - W.y) > 14) holdStop();
     let d = p.a - W.last;
     if (d > 180) d -= 360;
     if (d < -180) d += 360;
@@ -923,7 +979,8 @@
     if (!W.on || e.pointerId !== W.id) return;
     W.on = false;
     hot(W.zone, false);
-    if (cancelled) return;
+    holdStop();
+    if (cancelled || W.held) { W.held = false; return; }
     if (W.total < 12 && Math.hypot(e.clientX - W.x, e.clientY - W.y) < 16) {
       tick();
       if (W.zone === 'center') press();
@@ -935,6 +992,27 @@
   }
   wheel.addEventListener('pointerup', (e) => wheelEnd(e, false));
   wheel.addEventListener('pointercancel', (e) => wheelEnd(e, true));
+  /* Up and down arrows beside the wheel. They sit outside the wheel element, so they never touch its gestures. */
+  (function rocker() {
+    let rep = 0, rep2 = 0;
+    const stop = () => { clearTimeout(rep); clearInterval(rep2); rep = 0; rep2 = 0; };
+    [['#rkUp', -1], ['#rkDn', 1]].forEach(([sel, dir]) => {
+      const b = $(sel);
+      if (!b) return;
+      b.addEventListener('pointerdown', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        stop();
+        b.classList.add('on');
+        step(dir);
+        rep = setTimeout(() => { rep2 = setInterval(() => step(dir), 85); }, 380);
+      });
+      const up = () => { b.classList.remove('on'); stop(); };
+      b.addEventListener('pointerup', up);
+      b.addEventListener('pointercancel', up);
+      b.addEventListener('pointerleave', up);
+      b.addEventListener('contextmenu', (e) => e.preventDefault());
+    });
+  })();
   document.addEventListener('keydown', (e) => {
     if (/^(INPUT|TEXTAREA)$/.test((e.target || {}).tagName || '')) return;
     if (e.key === 'ArrowDown') { step(1); e.preventDefault(); }
@@ -1064,6 +1142,7 @@
     return tracks.map((t, i) => ({
       t: t.title, s: t.artist, dl: t.dl,
       on: () => { playList(tracks, i, 'sc'); openNP(); },
+      cue: () => cueTrack(t, 'sc'),
       long: () => push(listScreen('Options', () => [
         { t: 'Open on SoundCloud', on: () => openLink(t.link) },
         { t: t.dl ? 'Uploader allows downloads' : 'Streaming only', dim: 1 }
