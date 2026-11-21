@@ -1133,7 +1133,7 @@
         } catch (e) { return { err: e.message || 'failed' }; }
       };
       (async () => {
-        line('v3 ' + location.pathname);
+        line('v4 ' + location.pathname);
         const t = scTok();
         line(t ? 'Token ok, ' + Math.round((t.exp - Date.now()) / 60000) + ' min left' : 'No token', t ? 'ok' : 'bad');
         try {
@@ -1163,6 +1163,30 @@
               }
             } catch (e) { line('  ' + e.message, 'bad'); }
           }
+          line('Counting all likes...');
+          try {
+            const c = { playable: 0, preview: 0, blocked: 0, other: 0 };
+            let path = '/me/likes/tracks', params = { limit: 200, linked_partitioning: 'true', access: 'playable,preview,blocked' };
+            for (let g = 0; g < 30; g++) {
+              const j = await scApi(path, params);
+              const col = Array.isArray(j) ? j : (j.collection || []);
+              col.forEach((x) => { c[x.access in c ? x.access : 'other']++; });
+              if (!j.next_href) break;
+              path = j.next_href; params = null;
+            }
+            line('Tracks: ' + c.playable + ' full, ' + c.preview + ' preview, ' + c.blocked + ' blocked' + (c.other ? ', ' + c.other + ' other' : ''), 'ok');
+          } catch (e) { line('Count: ' + e.message, 'bad'); }
+          try {
+            let n = 0, path = '/me/likes/playlists', params = { limit: 200, linked_partitioning: 'true' };
+            for (let g = 0; g < 10; g++) {
+              const j = await scApi(path, params);
+              const col = Array.isArray(j) ? j : (j.collection || []);
+              n += col.length;
+              if (!j.next_href) break;
+              path = j.next_href; params = null;
+            }
+            line('Liked playlists/albums: ' + n, 'ok');
+          } catch (e) { line('Playlists: ' + e.message, 'bad'); }
           line('Done.');
         } catch (e) { line(e.message, 'bad'); }
       })();
