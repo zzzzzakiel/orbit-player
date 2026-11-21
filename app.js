@@ -1026,7 +1026,7 @@
 
   /* ================= SoundCloud (official API, streaming only) ================= */
   const SC = { api: 'https://api.soundcloud.com', auth: 'https://secure.soundcloud.com/authorize', token: 'https://secure.soundcloud.com/oauth/token' };
-  const sc = { likes: null, loading: false, q: '', fresh: [], seen: new Set(ls.get('orbit.sc.seen', [])) };
+  const sc = { likes: null, loading: false, q: '', fresh: [], seen: new Set(ls.get('orbit.sc.seen', [])), mine: null, mineName: '', mineLoading: false };
   const scCred = () => ls.get('orbit.sc.cred', null);
   const scTok = () => ls.get('orbit.sc.tok', null);
   const redirectUri = () => location.origin + location.pathname.replace(/index\.html$/, '');
@@ -1118,6 +1118,24 @@
     } catch (e) { toast(e.message, 4200); }
     finally { sc.loading = false; refresh(); }
   }
+  /* zababy: the songs released on the account that is signed in (the person's own SoundCloud profile). */
+  async function scLoadMine() {
+    if (sc.mineLoading) return;
+    sc.mineLoading = true;
+    try {
+      let all = [], name = '', path = '/me/tracks', params = { limit: 200, linked_partitioning: 'true' };
+      for (let guard = 0; guard < 30; guard++) {
+        const j = await scApi(path, params);
+        const col = Array.isArray(j) ? j : (j.collection || []);
+        col.forEach((t) => { if (!name && t.user && t.user.username) name = t.user.username; });
+        all = all.concat(col.filter((t) => t.access !== 'blocked' && t.sharing !== 'private').map(normTrack));
+        if (!j.next_href) break;
+        path = j.next_href; params = null;
+      }
+      sc.mine = all; sc.mineName = name;
+    } catch (e) { toast(e.message, 4200); }
+    finally { sc.mineLoading = false; }
+  }
   const SC_KEYS = ['hls_aac_160_url', 'hls_aac_96_url', 'hls_mp3_128_url', 'hls_opus_64_url', 'http_mp3_128_url'];
   async function scResolve(u) {
     if (!/^https:\/\/api\.soundcloud\.com\//.test(u)) return u;
@@ -1161,11 +1179,18 @@
         out.push({ t: 'Search', go: 1, on: () => push(scSearchScreen()) });
         out.push({ t: 'Likes', s: sc.likes ? String(sc.likes.length) : 'tap to load', go: 1, on: async () => { if (!sc.likes) await scLoadLikes(); if (sc.likes) push(listScreen('Likes', () => scTrackItems(sc.likes), { empty: 'No streamable likes found.' })); } });
         out.push({ t: 'Shuffle Likes', on: async () => { if (!sc.likes) await scLoadLikes(); if (sc.likes && sc.likes.length) { playList(sc.likes, null, 'sc', true); openNP(); } } });
+        out.push({ t: 'zababy', s: sc.mine ? String(sc.mine.length) : '', go: 1, on: async () => {
+          toast('Loading zababy\u2026', 30000);
+          await scLoadMine();
+          if (!sc.mine) return;
+          toast(sc.mine.length + (sc.mine.length === 1 ? ' song' : ' songs'), 1200);
+          push(listScreen('zababy', () => scTrackItems(sc.mine), { empty: 'No released songs found on the account you signed in with.', noteFn: () => sc.mineName ? 'Released by <b>' + esc(sc.mineName) + '</b>' : '' }));
+        } });
         out.push({ t: 'New since last sync', s: sc.likes ? String(sc.fresh.length) : '', go: 1, on: async () => { if (!sc.likes) await scLoadLikes(); if (sc.likes) push(scNewScreen()); } });
         out.push({ t: 'Downloadable likes', s: sc.likes ? String(sc.likes.filter((x) => x.dl).length) : '', go: 1, on: async () => { if (!sc.likes) await scLoadLikes(); if (sc.likes) push(listScreen('Downloadable', () => sc.likes.filter((x) => x.dl).map((t) => ({ t: t.title, s: t.artist, dl: true, on: () => openLink(t.link) })), { note: 'Tap a track to open its SoundCloud page and use the uploader\'s download button. Then import the file with Import Songs.', empty: 'None of your likes offer downloads.' })); } });
         out.push({ t: 'Refresh likes', on: () => scLoadLikes() });
         out.push({ t: 'Test connection', go: 1, dim: 1, on: () => push(scTest()) });
-        out.push({ t: 'Sign out and delete data', dim: 1, on: () => push(confirmScreen('Remove your SoundCloud login and saved like IDs from this device?', 'Sign Out', () => { ls.del('orbit.sc.tok'); ls.del('orbit.sc.seen'); sc.likes = null; sc.fresh = []; sc.seen = new Set(); if (P.kind === 'sc') { audio.pause(); audio.removeAttribute('src'); P.queue = []; P.base = []; P.idx = -1; } stack.pop(); render(); toast('Signed out. Data deleted.'); })) });
+        out.push({ t: 'Sign out and delete data', dim: 1, on: () => push(confirmScreen('Remove your SoundCloud login and saved like IDs from this device?', 'Sign Out', () => { ls.del('orbit.sc.tok'); ls.del('orbit.sc.seen'); sc.likes = null; sc.mine = null; sc.mineName = ''; sc.fresh = []; sc.seen = new Set(); if (P.kind === 'sc') { audio.pause(); audio.removeAttribute('src'); P.queue = []; P.base = []; P.idx = -1; } stack.pop(); render(); toast('Signed out. Data deleted.'); })) });
       }
       return out;
     }, { noteFn: () => blockedHost() ? '<b>Preview mode.</b> Claude\'s preview blocks outside connections, so SoundCloud only works from your own hosted copy of this app.' : '' });
