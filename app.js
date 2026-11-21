@@ -107,7 +107,7 @@
     { id: 'cola', name: 'Cherry Cola' },
     { id: 'champagne', name: 'Champagne' },
     { id: 'terminal', name: 'Terminal' },
-    { id: 'noir', name: 'Noir Red' },
+    { id: 'noir', name: 'Noir Pink' },
     { id: 'lime', name: 'Lime' },
     { id: 'grape', name: 'Grape Glitter' },
     { id: 'bubblegum', name: 'Bubblegum' },
