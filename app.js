@@ -1093,7 +1093,7 @@
   }
   function scSearchScreen() {
     return { kind: 'html', title: 'Search', mount(el) {
-      el.innerHTML = '<div class="form"><label for="scQ">Search SoundCloud and your likes</label>' +
+      el.innerHTML = '<div class="form"><label for="scQ">Search your liked songs</label>' +
         '<input id="scQ" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false" value="' + esc(sc.q || '') + '">' +
         '<div class="btnrow"><button class="btn" id="scGo" type="button">Search</button></div></div>';
       const go = () => {
@@ -1109,26 +1109,13 @@
     } };
   }
   function scResultsScreen(q) {
-    const st = { loading: true, tracks: [], err: '' };
-    const lq = q.toLowerCase();
-    const mine = (sc.likes || []).filter((t) => (t.title + ' ' + t.artist).toLowerCase().indexOf(lq) >= 0).slice(0, 30);
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
     const scr = listScreen('Results', () => {
-      const have = new Set(mine.map((t) => t.id));
-      const all = mine.concat(st.tracks.filter((t) => !have.has(t.id)));
-      const items = scTrackItems(all).map((it, i) => (i < mine.length ? Object.assign(it, { s: '\u2665 ' + all[i].artist }) : it));
-      if (st.loading) items.push({ t: 'Searching SoundCloud...', dim: 1 });
-      else if (st.err) items.push({ t: st.err, dim: 1 });
-      return items;
-    }, { empty: 'No matches.', note: 'Results for "' + esc(q) + '". A heart marks songs from your likes.' });
-    (async () => {
-      try {
-        const j = await scApi('/tracks', { q: q, access: 'playable', limit: 30, linked_partitioning: 'true' });
-        const col = Array.isArray(j) ? j : (j.collection || []);
-        st.tracks = col.filter((t) => t.access !== 'blocked').map(normTrack);
-      } catch (e) { st.err = e.message; }
-      st.loading = false;
-      if (top() === scr) refresh();
-    })();
+      if (!sc.likes) return [{ t: sc.loading ? 'Loading your likes...' : 'Could not load your likes', dim: 1 }];
+      const hit = sc.likes.filter((t) => { const hay = (t.title + ' ' + t.artist).toLowerCase(); return words.every((w) => hay.indexOf(w) >= 0); }).slice(0, 200);
+      return scTrackItems(hit);
+    }, { empty: 'No liked songs match.', note: 'Liked songs matching "' + esc(q) + '".' });
+    if (!sc.likes && !sc.loading) scLoadLikes();
     return scr;
   }
   function scNewScreen() {
