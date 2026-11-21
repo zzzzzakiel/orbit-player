@@ -1037,11 +1037,23 @@
     finally { sc.loading = false; refresh(); }
   }
   const SC_KEYS = ['hls_aac_160_url', 'hls_aac_96_url', 'hls_mp3_128_url', 'hls_opus_64_url', 'http_mp3_128_url'];
+  async function scResolve(u) {
+    if (!/^https:\/\/api\.soundcloud\.com\//.test(u)) return u;
+    const tok = await scAccess();
+    const ac = new AbortController();
+    const r = await fetch(u, { headers: { Authorization: 'OAuth ' + tok }, signal: ac.signal });
+    const fin = r.url;
+    ac.abort();
+    if (!r.ok) throw new Error('stream ' + r.status);
+    return fin || u;
+  }
   async function scStreamUrls(t) {
     const j = await scApi('/tracks/' + t.id + '/streams');
-    const list = SC_KEYS.filter((k) => j[k]).map((k) => ({ k: k, u: j[k] }));
-    if (!list.length) throw new Error(j.preview_mp3_128_url ? 'SoundCloud only allows a 30s preview of this one' : 'SoundCloud has no stream for this track');
-    return list;
+    const raw = SC_KEYS.filter((k) => j[k]).map((k) => ({ k: k, u: j[k] }));
+    if (!raw.length) throw new Error(j.preview_mp3_128_url ? 'SoundCloud only allows a 30s preview of this one' : 'SoundCloud has no stream for this track');
+    const res = await Promise.all(raw.map(async (c) => { try { return { k: c.k, u: await scResolve(c.u) }; } catch (e) { return null; } }));
+    const good = res.filter((c, n) => c && c.u !== raw[n].u);
+    return good.length ? good : raw;
   }
   function openLink(url) { if (!url) return; const a = document.createElement('a'); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; document.body.appendChild(a); a.click(); a.remove(); }
   function scTrackItems(tracks) {
@@ -1100,44 +1112,55 @@
       el.innerHTML = '<div class="log" id="scLog"></div>';
       const log = $('#scLog');
       const line = (txt, cls) => { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = txt; log.appendChild(d); log.scrollTop = log.scrollHeight; };
+      const hostOf = (x) => (x.split('/')[2] || x.slice(0, 24)).replace('.soundcloud.cloud', '.sc.cloud');
       const probe = (u) => new Promise((resolve) => {
         const a = new Audio(); a.preload = 'metadata';
         const done = (r) => { a.onloadedmetadata = null; a.onerror = null; a.removeAttribute('src'); resolve(r); };
         a.onloadedmetadata = () => done('ok ' + Math.round(a.duration) + 's');
         a.onerror = () => done('err' + (a.error ? a.error.code : '?'));
-        setTimeout(() => done('timeout'), 5000);
+        setTimeout(() => done('timeout'), 6000);
         a.src = u;
       });
-      const http = async (u) => { try { const r = await fetch(u); return String(r.status); } catch (e) { return 'cors'; } };
+      const detail = async (u, tok) => {
+        const ac = new AbortController();
+        try {
+          const r = await fetch(u, { headers: { Authorization: 'OAuth ' + tok }, signal: ac.signal });
+          const fin = r.url, ct = (r.headers.get('content-type') || '').split(';')[0];
+          let body = '';
+          if (/mpegurl|text|json/.test(ct)) body = (await r.text()).slice(0, 500);
+          ac.abort();
+          return { st: r.status, fin: fin, same: fin === u, ct: ct, body: body };
+        } catch (e) { return { err: e.message || 'failed' }; }
+      };
       (async () => {
-        line('v2 ' + location.pathname);
+        line('v3 ' + location.pathname);
         const t = scTok();
         line(t ? 'Token ok, ' + Math.round((t.exp - Date.now()) / 60000) + ' min left' : 'No token', t ? 'ok' : 'bad');
         try {
-          const me = await scApi('/me');
-          line('/me: ' + (me.username || me.urn), 'ok');
+          const tok = await scAccess();
           let tr = sc.likes;
           if (!tr || !tr.length) {
             const j = await scApi('/me/likes/tracks', { limit: 8, linked_partitioning: 'true', access: 'playable' });
             tr = (Array.isArray(j) ? j : (j.collection || [])).map(normTrack);
           }
-          const n = tr.length;
-          const idx = Array.from(new Set([0, 1, 2, Math.floor(n / 4), Math.floor(n / 2), Math.floor(3 * n / 4), n - 1].filter((i) => i >= 0 && i < n)));
-          line('likes: ' + n + ', testing ' + idx.length, 'ok');
+          const idx = Array.from(new Set([0, 2].filter((i) => i < tr.length)));
           for (const i of idx) {
             const x = tr[i];
             line('#' + (i + 1) + ' ' + x.title.slice(0, 26));
             try {
               const s = await scApi('/tracks/' + x.id + '/streams');
-              const ks = Object.keys(s);
-              line('  keys: ' + ks.map((k) => k.replace(/_url$/, '')).join(' '));
-              const k = SC_KEYS.find((q) => s[q]);
-              if (!k) { line('  no full stream', 'bad'); continue; }
-              const u = s[k];
-              const host = (u.split('/')[2] || '').replace('.soundcloud.cloud', '.sc.cloud');
-              const st = await http(u);
-              const au = await probe(u);
-              line('  ' + k.replace(/_url$/, '') + ' @' + host + ' http ' + st + ' audio ' + au, /^ok/.test(au) ? 'ok' : 'bad');
+              for (const k of SC_KEYS.filter((q) => s[q])) {
+                line(' ' + k.replace(/_url$/, ''));
+                const d = await detail(s[k], tok);
+                if (d.err) { line('  fetch: ' + d.err, 'bad'); continue; }
+                line('  auth ' + d.st + (d.same ? ' same-url' : ' > ' + hostOf(d.fin)) + ' ' + d.ct, d.st === 200 ? 'ok' : 'bad');
+                if (d.same && d.body) {
+                  const segs = d.body.split('\n').filter((l) => l && l[0] !== '#');
+                  line('  body ' + d.body.replace(/\s+/g, ' ').slice(0, 80));
+                  if (segs[0]) line('  seg ' + hostOf(segs[0]) + ' ..' + segs[0].split('?')[0].slice(-24));
+                }
+                if (!d.same) { const au = await probe(d.fin); line('  audio ' + au, /^ok/.test(au) ? 'ok' : 'bad'); }
+              }
             } catch (e) { line('  ' + e.message, 'bad'); }
           }
           line('Done.');
